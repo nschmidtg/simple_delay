@@ -459,8 +459,8 @@ private:
                 auto* samplesOutL = outputBlock.getChannelPointer (0);
                 auto* samplesOutR = outputBlock.getChannelPointer (1);
                 
-                auto inputL = samplesInL[i] + lastDelayEffectOutput[1];
-                auto inputR = samplesInR[i] + lastDelayEffectOutput[0];
+                auto inputL = samplesInR[i] + lastDelayEffectOutput[1];
+                auto inputR = samplesInL[i] + lastDelayEffectOutput[0];
 
                 auto delay = smoothFilter.processSample (int (0), delayEffectValue);
 
