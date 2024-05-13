@@ -362,9 +362,7 @@ private:
         {
             DelayEffectProcessor& delay = dsp::get<delayEffectIndex> (chain);
 
-            std::fill (delay.delayEffectValue.begin(),
-                       delay.delayEffectValue.end(),
-                       (double) parameters.delayEffect.value.get() / 1000.0 * getSampleRate());
+            delay.delayEffectValue = (double) parameters.delayEffect.value.get() / 1000.0 * getSampleRate();
 
             const auto feedbackGain = Decibels::decibelsToGain (parameters.delayEffect.feedback.get(), -100.0f);
 
@@ -452,37 +450,43 @@ private:
             const auto numChannels = inputBlock.getNumChannels();
 
             mixer.pushDrySamples (inputBlock);
-            int lastDelay = 0;
-
-            for (size_t channel = 0; channel < numChannels; ++channel)
+            for (size_t i = 0; i < numSamples; ++i)
             {
-                auto* samplesIn  = inputBlock .getChannelPointer (channel);
-                auto* samplesOut = outputBlock.getChannelPointer (channel);
-                int currentSample = totalSamples;
+                
+                
+                auto* samplesInL  = inputBlock .getChannelPointer (0);
+                auto* samplesInR  = inputBlock .getChannelPointer (1);
+                auto* samplesOutL = outputBlock.getChannelPointer (0);
+                auto* samplesOutR = outputBlock.getChannelPointer (1);
+                
+                auto inputL = samplesInL[i] + lastDelayEffectOutput[1];
+                auto inputR = samplesInR[i] + lastDelayEffectOutput[0];
 
-                for (size_t i = 0; i < numSamples; ++i)
-                {
-                    auto input = samplesIn[i] - lastDelayEffectOutput[channel];
+                auto delay = smoothFilter.processSample (int (0), delayEffectValue);
 
-                    auto delay = smoothFilter.processSample (int (channel), delayEffectValue[channel]);
-                    lastDelay = delay;
+                
+                const auto outputL = linear.popSample (int (0));
+                const auto outputR = linear.popSample (int (1));
+                
+                linear.pushSample (0, inputL);
+                linear.pushSample (1, inputR);
+                linear.setDelay ((float) delay);
 
-                    
-                    linear.pushSample (int (channel), input);
-                    linear.setDelay ((float) delay);
-                    const auto output = linear.popSample (int (channel));
+                auto processedL = lowpass.processSample (int (0), outputL);
+                processedL = hipass.processSample(int (0), processedL);
+                
+                auto processedR = lowpass.processSample (int (1), outputR);
+                processedR = hipass.processSample(int (1), processedR);
 
-                    auto processed = lowpass.processSample (int (channel), output);
-                    processed = hipass.processSample(int (channel), processed);
+                samplesOutL[i] = processedL;
+                samplesOutR[i] = processedR;
 
-                    samplesOut[i] = processed;
-                    lastDelaySample[channel] = processed;
-                    lastDelayEffectOutput[channel] = processed * delayFeedbackVolume[channel].getNextValue();
-                    
-                    currentSample = (currentSample + 1) % lastDelay;
-                }
+                lastDelayEffectOutput[0] = processedL * delayFeedbackVolume[0].getNextValue();
+                lastDelayEffectOutput[1] = processedR * delayFeedbackVolume[1].getNextValue();
+            
+
             }
-            totalSamples = (totalSamples + numSamples) % lastDelay;
+
             mixer.mixWetSamples (outputBlock);
         }
 
@@ -493,7 +497,7 @@ private:
         // Double precision to avoid some approximation issues
         dsp::FirstOrderTPTFilter<double> smoothFilter;
 
-        std::array<double, 2> delayEffectValue;
+        double delayEffectValue;
 
         std::array<LinearSmoothedValue<float>, 2> delayFeedbackVolume;
         dsp::FirstOrderTPTFilter<float> lowpass;
