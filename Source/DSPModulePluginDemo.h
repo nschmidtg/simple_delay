@@ -58,7 +58,6 @@ namespace ID
     PARAMETER_ID (outputGain)
     PARAMETER_ID (pan)
     PARAMETER_ID (delayEffectValue)
-    PARAMETER_ID (delayEffectSmoothing)
     PARAMETER_ID (delayEffectLowpass)
     PARAMETER_ID (delayEffectHipass)
     PARAMETER_ID (delayEffectFeedback)
@@ -268,12 +267,6 @@ public:
                                                  NormalisableRange<float> (0.01f, 1000.0f),
                                                  500.0f,
                                                  getMsAttributes())),
-                  smoothing (addToLayout<Parameter> (layout,
-                                                     ParameterID { ID::delayEffectSmoothing, 1 },
-                                                     "Smooth",
-                                                     NormalisableRange<float> (20.0f, 10000.0f, 0.0f, 0.25f),
-                                                     400.0f,
-                                                     getMsAttributes())),
                   lowpass (addToLayout<Parameter> (layout,
                                                    ParameterID { ID::delayEffectLowpass, 1 },
                                                    "Low-pass",
@@ -300,7 +293,6 @@ public:
                                                     getDbAttributes())) {}
 
             Parameter& value;
-            Parameter& smoothing;
             Parameter& lowpass;
             Parameter& hipass;
             Parameter& mix;
@@ -369,7 +361,7 @@ private:
             for (auto& volume : delay.delayFeedbackVolume)
                 volume.setTargetValue (feedbackGain);
 
-            delay.smoothFilter.setCutoffFrequency (1000.0 / parameters.delayEffect.smoothing.get());
+            delay.smoothFilter.setCutoffFrequency (1000.0 / 800.0f);
             delay.lowpass.setCutoffFrequency (parameters.delayEffect.lowpass.get());
             delay.hipass.setCutoffFrequency (parameters.delayEffect.hipass.get());
             delay.mixer.setWetMixProportion (parameters.delayEffect.mix.get() / 100.0f);
@@ -575,32 +567,11 @@ public:
     //==============================================================================
     void paint (Graphics& g) override
     {
-        auto rect = getLocalBounds();
 
-        auto rectTop    = rect.removeFromTop (topSize);
-        auto rectBottom = rect.removeFromBottom (bottomSize);
 
-        auto rectEffects = rect.removeFromBottom (tabSize);
-        auto rectChoice  = rect.removeFromBottom (midSize);
 
-        g.setColour (getLookAndFeel().findColour (ResizableWindow::backgroundColourId));
-        g.fillRect (rect);
-
-        g.setColour (getLookAndFeel().findColour (ResizableWindow::backgroundColourId).brighter (0.2f));
-        g.fillRect (rectEffects);
-
-        g.setColour (getLookAndFeel().findColour (ResizableWindow::backgroundColourId).darker (0.2f));
-        g.fillRect (rectTop);
-        g.fillRect (rectBottom);
-        g.fillRect (rectChoice);
-
-        g.setColour (Colours::white);
-        g.setFont (Font (20.0f).italicised().withExtraKerningFactor (0.1f));
-        g.drawFittedText ("DSP MODULE DEMO", rectTop.reduced (10, 0), Justification::centredLeft, 1);
-
-        g.setFont (Font (14.0f));
-        String strText = "IR length (reverb): " + String (proc.getCurrentIRSize()) + " samples";
-        g.drawFittedText (strText, rectBottom.reduced (10, 0), Justification::centredRight, 1);
+        background = ImageCache::getFromMemory (BinaryData::background_png, BinaryData::background_pngSize);
+        g.drawImageWithin(background, 0, 0, getWidth(), getHeight(), juce::RectanglePlacement::stretchToFit);
     }
 
     void resized() override
@@ -624,6 +595,7 @@ public:
     }
 
 private:
+    juce::Image background;
     class ComponentWithParamMenu : public Component
     {
     public:
@@ -807,21 +779,20 @@ private:
         explicit DelayEffectControls (AudioProcessorEditor& editor,
                                       const DspModulePluginDemo::ParameterReferences::DelayEffectGroup& state)
             : value    (editor, state.value),
-              smooth   (editor, state.smoothing),
               lowpass  (editor, state.lowpass),
               hipass   (editor, state.hipass),
               feedback (editor, state.feedback),
               mix      (editor, state.mix)
         {
-            addAllAndMakeVisible (*this, value, smooth, lowpass, hipass, feedback, mix);
+            addAllAndMakeVisible (*this, value, lowpass, hipass, feedback, mix);
         }
 
         void resized() override
         {
-            performLayout (getLocalBounds(), value, smooth, lowpass, hipass, feedback, mix);
+            performLayout (getLocalBounds(), value, lowpass, hipass, feedback, mix);
         }
 
-        AttachedSlider value, smooth, lowpass, hipass, feedback, mix;
+        AttachedSlider value, lowpass, hipass, feedback, mix;
     };
 
     
