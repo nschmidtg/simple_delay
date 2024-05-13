@@ -58,7 +58,6 @@ namespace ID
     PARAMETER_ID (outputGain)
     PARAMETER_ID (pan)
     PARAMETER_ID (delayEffectEnabled)
-    PARAMETER_ID (delayEffectType)
     PARAMETER_ID (delayEffectValue)
     PARAMETER_ID (delayEffectSmoothing)
     PARAMETER_ID (delayEffectLowpass)
@@ -268,16 +267,11 @@ public:
                                                             ParameterID { ID::delayEffectEnabled, 1 },
                                                             "DL Effect",
                                                             false)),
-                  type (addToLayout<AudioParameterChoice> (layout,
-                                                           ParameterID { ID::delayEffectType, 1 },
-                                                           "DL Type",
-                                                           StringArray { "None", "Linear", "Lagrange", "Thiran" },
-                                                           1)),
                   value (addToLayout<Parameter> (layout,
                                                  ParameterID { ID::delayEffectValue, 1 },
                                                  "Delay",
                                                  NormalisableRange<float> (0.01f, 1000.0f),
-                                                 100.0f,
+                                                 500.0f,
                                                  getMsAttributes())),
                   smoothing (addToLayout<Parameter> (layout,
                                                      ParameterID { ID::delayEffectSmoothing, 1 },
@@ -306,12 +300,11 @@ public:
                   feedback (addToLayout<Parameter> (layout,
                                                     ParameterID { ID::delayEffectFeedback, 1 },
                                                     "Feedback",
-                                                    NormalisableRange<float> (-100.0f, 0.0f),
-                                                    -100.0f,
+                                                    NormalisableRange<float> (-20.0f, 0.0f),
+                                                    -5.0f,
                                                     getDbAttributes())) {}
 
             AudioParameterBool& enabled;
-            AudioParameterChoice& type;
             Parameter& value;
             Parameter& smoothing;
             Parameter& lowpass;
@@ -374,7 +367,6 @@ private:
 
         {
             DelayEffectProcessor& delay = dsp::get<delayEffectIndex> (chain);
-            delay.delayEffectType = parameters.delayEffect.type.getIndex();
 
             std::fill (delay.delayEffectValue.begin(),
                        delay.delayEffectValue.end(),
@@ -442,7 +434,7 @@ private:
 
         void prepare (const dsp::ProcessSpec& spec)
         {
-            prepareAll (spec, noInterpolation, linear, lagrange, thiran, smoothFilter, lowpass, hipass, mixer);
+            prepareAll (spec, linear, smoothFilter, lowpass, hipass, mixer);
 
             for (auto& volume : delayFeedbackVolume)
                 volume.reset (spec.sampleRate, 0.05);
@@ -450,7 +442,7 @@ private:
 
         void reset()
         {
-            resetAll (noInterpolation, linear, lagrange, thiran, smoothFilter, lowpass, hipass, mixer);
+            resetAll (linear, smoothFilter, lowpass, hipass, mixer);
             std::fill (lastDelayEffectOutput.begin(), lastDelayEffectOutput.end(), 0.0f);
         }
 
@@ -466,65 +458,58 @@ private:
             const auto numChannels = inputBlock.getNumChannels();
 
             mixer.pushDrySamples (inputBlock);
+            int lastDelay = 0;
 
             for (size_t channel = 0; channel < numChannels; ++channel)
             {
                 auto* samplesIn  = inputBlock .getChannelPointer (channel);
                 auto* samplesOut = outputBlock.getChannelPointer (channel);
+                int currentSample = totalSamples;
 
                 for (size_t i = 0; i < numSamples; ++i)
                 {
                     auto input = samplesIn[i] - lastDelayEffectOutput[channel];
 
                     auto delay = smoothFilter.processSample (int (channel), delayEffectValue[channel]);
+                    lastDelay = delay;
 
-                    const auto output = [&]
+                    
+                    linear.pushSample (int (channel), input);
+                    linear.setDelay ((float) delay);
+                    const auto output = linear.popSample (int (channel));
+
+                    // Apply ping-pong delay
+                    float pingPongPan = -1.0f;
+                    /*float outNew = 0.0f;
+                    if (channel % 2 == 0) // Left channel
                     {
-                        switch (delayEffectType)
-                        {
-                            case 0:
-                                noInterpolation.pushSample (int (channel), input);
-                                noInterpolation.setDelay ((float) delay);
-                                return noInterpolation.popSample (int (channel));
-
-                            case 1:
-                                linear.pushSample (int (channel), input);
-                                linear.setDelay ((float) delay);
-                                return linear.popSample (int (channel));
-
-                            case 2:
-                                lagrange.pushSample (int (channel), input);
-                                lagrange.setDelay ((float) delay);
-                                return lagrange.popSample (int (channel));
-
-                            case 3:
-                                thiran.pushSample (int (channel), input);
-                                thiran.setDelay ((float) delay);
-                                return thiran.popSample (int (channel));
-
-                            default:
-                                break;
-                        }
-
-                        jassertfalse;
-                        return 0.0f;
-                    }();
+                        // Pan the output based on the delay time
+                        float pan = currentSample / (float) lastDelay * 2.0f - 1.0f;
+                        outNew = output * (1.0f - pan) * 0.5f;
+                    }
+                    else // Right channel
+                    {
+                        // Pan the output based on the delay time
+                        float pan = currentSample / (float) lastDelay * 2.0f - 1.0f;
+                        outNew = (1.0f + pan) * 0.5f;
+                    }*/
 
                     auto processed = lowpass.processSample (int (channel), output);
                     processed = hipass.processSample(int (channel), processed);
 
                     samplesOut[i] = processed;
                     lastDelayEffectOutput[channel] = processed * delayFeedbackVolume[channel].getNextValue();
+                    
+                    currentSample = (currentSample + 1) % lastDelay;
                 }
             }
+            totalSamples = (totalSamples + numSamples) % lastDelay;
             mixer.mixWetSamples (outputBlock);
         }
 
         static constexpr auto effectDelaySamples = 192000;
-        dsp::DelayLine<float, dsp::DelayLineInterpolationTypes::None>        noInterpolation { effectDelaySamples };
         dsp::DelayLine<float, dsp::DelayLineInterpolationTypes::Linear>      linear          { effectDelaySamples };
-        dsp::DelayLine<float, dsp::DelayLineInterpolationTypes::Lagrange3rd> lagrange        { effectDelaySamples };
-        dsp::DelayLine<float, dsp::DelayLineInterpolationTypes::Thiran>      thiran          { effectDelaySamples };
+
 
         // Double precision to avoid some approximation issues
         dsp::FirstOrderTPTFilter<double> smoothFilter;
@@ -539,7 +524,7 @@ private:
         dsp::DryWetMixer<float> mixer;
         std::array<float, 2> lastDelayEffectOutput;
         
-        int delayEffectType = 1;
+        int totalSamples = 0;
     };
 
     ParameterReferences parameters;
@@ -838,7 +823,6 @@ private:
         explicit DelayEffectControls (AudioProcessorEditor& editor,
                                       const DspModulePluginDemo::ParameterReferences::DelayEffectGroup& state)
             : toggle   (editor, state.enabled),
-              type     (editor, state.type),
               value    (editor, state.value),
               smooth   (editor, state.smoothing),
               lowpass  (editor, state.lowpass),
@@ -846,16 +830,15 @@ private:
               feedback (editor, state.feedback),
               mix      (editor, state.mix)
         {
-            addAllAndMakeVisible (*this, toggle, type, value, smooth, lowpass, hipass, feedback, mix);
+            addAllAndMakeVisible (*this, toggle, value, smooth, lowpass, hipass, feedback, mix);
         }
 
         void resized() override
         {
-            performLayout (getLocalBounds(), toggle, type, value, smooth, lowpass, hipass, feedback, mix);
+            performLayout (getLocalBounds(), toggle, value, smooth, lowpass, hipass, feedback, mix);
         }
 
         AttachedToggle toggle;
-        AttachedCombo type;
         AttachedSlider value, smooth, lowpass, hipass, feedback, mix;
     };
 
