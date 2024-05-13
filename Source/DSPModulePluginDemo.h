@@ -57,7 +57,6 @@ namespace ID
     PARAMETER_ID (inputGain)
     PARAMETER_ID (outputGain)
     PARAMETER_ID (pan)
-    PARAMETER_ID (delayEffectEnabled)
     PARAMETER_ID (delayEffectValue)
     PARAMETER_ID (delayEffectSmoothing)
     PARAMETER_ID (delayEffectLowpass)
@@ -263,11 +262,7 @@ public:
         struct DelayEffectGroup
         {
             explicit DelayEffectGroup (AudioProcessorParameterGroup& layout)
-                : enabled (addToLayout<AudioParameterBool> (layout,
-                                                            ParameterID { ID::delayEffectEnabled, 1 },
-                                                            "DL Effect",
-                                                            false)),
-                  value (addToLayout<Parameter> (layout,
+                : value (addToLayout<Parameter> (layout,
                                                  ParameterID { ID::delayEffectValue, 1 },
                                                  "Delay",
                                                  NormalisableRange<float> (0.01f, 1000.0f),
@@ -304,7 +299,6 @@ public:
                                                     -5.0f,
                                                     getDbAttributes())) {}
 
-            AudioParameterBool& enabled;
             Parameter& value;
             Parameter& smoothing;
             Parameter& lowpass;
@@ -381,7 +375,6 @@ private:
             delay.lowpass.setCutoffFrequency (parameters.delayEffect.lowpass.get());
             delay.hipass.setCutoffFrequency (parameters.delayEffect.hipass.get());
             delay.mixer.setWetMixProportion (parameters.delayEffect.mix.get() / 100.0f);
-            dsp::setBypassed<delayEffectIndex> (chain, ! parameters.delayEffect.enabled);
         }
 
         requiresUpdate.store (false);
@@ -444,6 +437,7 @@ private:
         {
             resetAll (linear, smoothFilter, lowpass, hipass, mixer);
             std::fill (lastDelayEffectOutput.begin(), lastDelayEffectOutput.end(), 0.0f);
+            std::fill (lastDelaySample.begin(), lastDelaySample.end(), 0.0f);
         }
 
         template <typename Context>
@@ -478,26 +472,11 @@ private:
                     linear.setDelay ((float) delay);
                     const auto output = linear.popSample (int (channel));
 
-                    // Apply ping-pong delay
-                    float pingPongPan = -1.0f;
-                    /*float outNew = 0.0f;
-                    if (channel % 2 == 0) // Left channel
-                    {
-                        // Pan the output based on the delay time
-                        float pan = currentSample / (float) lastDelay * 2.0f - 1.0f;
-                        outNew = output * (1.0f - pan) * 0.5f;
-                    }
-                    else // Right channel
-                    {
-                        // Pan the output based on the delay time
-                        float pan = currentSample / (float) lastDelay * 2.0f - 1.0f;
-                        outNew = (1.0f + pan) * 0.5f;
-                    }*/
-
                     auto processed = lowpass.processSample (int (channel), output);
                     processed = hipass.processSample(int (channel), processed);
 
                     samplesOut[i] = processed;
+                    lastDelaySample[channel] = processed;
                     lastDelayEffectOutput[channel] = processed * delayFeedbackVolume[channel].getNextValue();
                     
                     currentSample = (currentSample + 1) % lastDelay;
@@ -523,6 +502,7 @@ private:
         //dsp::Panner<float> pingPongPanner;
         dsp::DryWetMixer<float> mixer;
         std::array<float, 2> lastDelayEffectOutput;
+        std::array<float, 2> lastDelaySample;
         
         int totalSamples = 0;
     };
@@ -822,23 +802,21 @@ private:
     {
         explicit DelayEffectControls (AudioProcessorEditor& editor,
                                       const DspModulePluginDemo::ParameterReferences::DelayEffectGroup& state)
-            : toggle   (editor, state.enabled),
-              value    (editor, state.value),
+            : value    (editor, state.value),
               smooth   (editor, state.smoothing),
               lowpass  (editor, state.lowpass),
               hipass   (editor, state.hipass),
               feedback (editor, state.feedback),
               mix      (editor, state.mix)
         {
-            addAllAndMakeVisible (*this, toggle, value, smooth, lowpass, hipass, feedback, mix);
+            addAllAndMakeVisible (*this, value, smooth, lowpass, hipass, feedback, mix);
         }
 
         void resized() override
         {
-            performLayout (getLocalBounds(), toggle, value, smooth, lowpass, hipass, feedback, mix);
+            performLayout (getLocalBounds(), value, smooth, lowpass, hipass, feedback, mix);
         }
 
-        AttachedToggle toggle;
         AttachedSlider value, smooth, lowpass, hipass, feedback, mix;
     };
 
