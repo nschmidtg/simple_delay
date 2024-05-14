@@ -54,9 +54,7 @@ namespace ID
 {
    #define PARAMETER_ID(str) constexpr const char* str { #str };
 
-    PARAMETER_ID (inputGain)
     PARAMETER_ID (outputGain)
-    PARAMETER_ID (pan)
     PARAMETER_ID (delayEffectValue)
     PARAMETER_ID (delayEffectLowpass)
     PARAMETER_ID (delayEffectHipass)
@@ -226,35 +224,17 @@ public:
         static auto getPercentageAttributes()   { return getBasicAttributes().withLabel ("%"); }
         static auto getRatioAttributes()        { return getBasicAttributes().withLabel (":1"); }
 
-        static String valueToTextPanFunction (float x, int) { return getPanningTextForValue ((x + 100.0f) / 200.0f); }
-        static float textToValuePanFunction (const String& str) { return getPanningValueForText (str) * 200.0f - 100.0f; }
-
         struct MainGroup
         {
             explicit MainGroup (AudioProcessorParameterGroup& layout)
-                : inputGain (addToLayout<Parameter> (layout,
-                                                     ParameterID { ID::inputGain, 1 },
-                                                     "Input",
-                                                     NormalisableRange<float> (-40.0f, 40.0f),
-                                                     0.0f,
-                                                     getDbAttributes())),
-                  outputGain (addToLayout<Parameter> (layout,
+                : outputGain (addToLayout<Parameter> (layout,
                                                       ParameterID { ID::outputGain, 1 },
                                                       "Output",
                                                       NormalisableRange<float> (-40.0f, 40.0f),
                                                       0.0f,
-                                                      getDbAttributes())),
-                  pan (addToLayout<Parameter> (layout,
-                                               ParameterID { ID::pan, 1 },
-                                               "Panning",
-                                               NormalisableRange<float> (-100.0f, 100.0f),
-                                               0.0f,
-                                               Attributes().withStringFromValueFunction (valueToTextPanFunction)
-                                                           .withValueFromStringFunction (textToValuePanFunction))) {}
+                                                      getDbAttributes())) {}
 
-            Parameter& inputGain;
             Parameter& outputGain;
-            Parameter& pan;
         };
 
         
@@ -330,10 +310,8 @@ private:
         apvts.state.addListener (this);
 
         forEach ([] (dsp::Gain<float>& gain) { gain.setRampDurationSeconds (0.05); },
-                 dsp::get<inputGainIndex>  (chain),
                  dsp::get<outputGainIndex> (chain));
 
-        dsp::get<pannerIndex> (chain).setRule (dsp::PannerRule::linear);
     }
 
     //==============================================================================
@@ -347,9 +325,7 @@ private:
     {
         
 
-        dsp::get<inputGainIndex>  (chain).setGainDecibels (parameters.main.inputGain.get());
         dsp::get<outputGainIndex> (chain).setGainDecibels (parameters.main.outputGain.get());
-        dsp::get<pannerIndex> (chain).setPan (parameters.main.pan.get() / 100.0f);
 
         {
             DelayEffectProcessor& delay = dsp::get<delayEffectIndex> (chain);
@@ -371,39 +347,6 @@ private:
     }
 
     //==============================================================================
-    static String getPanningTextForValue (float value)
-    {
-        if (approximatelyEqual (value, 0.5f))
-            return "center";
-
-        if (value < 0.5f)
-            return String (roundToInt ((0.5f - value) * 200.0f)) + "%L";
-
-        return String (roundToInt ((value - 0.5f) * 200.0f)) + "%R";
-    }
-
-    static float getPanningValueForText (String strText)
-    {
-        if (strText.compareIgnoreCase ("center") == 0 || strText.compareIgnoreCase ("c") == 0)
-            return 0.5f;
-
-        strText = strText.trim();
-
-        if (strText.indexOfIgnoreCase ("%L") != -1)
-        {
-            auto percentage = (float) strText.substring (0, strText.indexOf ("%")).getDoubleValue();
-            return (100.0f - percentage) / 100.0f * 0.5f;
-        }
-
-        if (strText.indexOfIgnoreCase ("%R") != -1)
-        {
-            auto percentage = (float) strText.substring (0, strText.indexOf ("%")).getDoubleValue();
-            return percentage / 100.0f * 0.5f + 0.5f;
-        }
-
-        return 0.5f;
-    }
-
     
     struct DelayEffectProcessor
     {
@@ -495,20 +438,16 @@ private:
     ParameterReferences parameters;
     AudioProcessorValueTreeState apvts;
 
-    using Chain = dsp::ProcessorChain<dsp::Gain<float>,
-                                      DelayEffectProcessor,
-                                      dsp::Gain<float>,
-                                      dsp::Panner<float>>;
+    using Chain = dsp::ProcessorChain<DelayEffectProcessor,
+                                      dsp::Gain<float>>;
     Chain chain;
     
 
     // We use this enum to index into the chain above
     enum ProcessorIndices
     {
-        inputGainIndex,
         delayEffectIndex,
         outputGainIndex,
-        pannerIndex
     };
 
     //==============================================================================
@@ -643,19 +582,17 @@ private:
     {
         explicit BasicControls (AudioProcessorEditor& editor,
                                 const DspModulePluginDemo::ParameterReferences::MainGroup& state)
-            : pan       (editor, state.pan),
-              input     (editor, state.inputGain),
-              output    (editor, state.outputGain)
+            : output    (editor, state.outputGain)
         {
-            addAllAndMakeVisible (*this, pan, input, output);
+            addAllAndMakeVisible (*this, output);
         }
 
         void resized() override
         {
-            performLayout (getLocalBounds(), input, output, pan);
+            performLayout (getLocalBounds(), output);
         }
 
-        AttachedSlider pan, input, output;
+        AttachedSlider output;
     };
 
     
@@ -682,7 +619,7 @@ private:
 
     
     //==============================================================================
-    static constexpr auto topSize    = 40,
+    static constexpr auto topSize    = 80,
                           bottomSize = 40,
                           midSize    = 40,
                           tabSize    = 155;
