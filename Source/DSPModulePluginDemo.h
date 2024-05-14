@@ -479,16 +479,32 @@ public:
     //==============================================================================
     void paint (Graphics& g) override
     {
-
-
-
         background = ImageCache::getFromMemory (BinaryData::background_png, BinaryData::background_pngSize);
         g.drawImageWithin(background, 0, 0, getWidth(), getHeight(), juce::RectanglePlacement::stretchToFit);
     }
 
     void resized() override
     {
+        
+        int knobSize = 192;
         auto rect = getLocalBounds();
+        
+
+        /*
+        
+        mixSlider.setBounds(getWidth()-61-knobSize, 69, knobSize, knobSize);
+        mixLabel.setBounds(mixSlider.getBounds().removeFromBottom(30));
+        
+        
+        feedbackSlider.setBounds(66, getHeight() - 91 - knobSize, knobSize, knobSize);
+        feedbackLabel.setBounds(feedbackSlider.getBounds().removeFromBottom(30));
+        
+        timeSlider.setBounds(getWidth()-61-knobSize, getHeight() - 91 - knobSize, knobSize, knobSize);
+        timeLabel.setBounds(timeSlider.getBounds().removeFromBottom(30));
+        
+        */
+        
+        
         rect.removeFromTop (topSize);
         rect.removeFromBottom (bottomSize);
 
