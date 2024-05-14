@@ -225,6 +225,38 @@ public:
         static auto getHzAttributes()           { return getBasicAttributes().withLabel ("Hz"); }
         static auto getPercentageAttributes()   { return getBasicAttributes().withLabel ("%"); }
         static auto getRatioAttributes()        { return getBasicAttributes().withLabel (":1"); }
+
+        static String valueToTextPanFunction (float x, int) { return getPanningTextForValue ((x + 100.0f) / 200.0f); }
+        static float textToValuePanFunction (const String& str) { return getPanningValueForText (str) * 200.0f - 100.0f; }
+
+        struct MainGroup
+        {
+            explicit MainGroup (AudioProcessorParameterGroup& layout)
+                : inputGain (addToLayout<Parameter> (layout,
+                                                     ParameterID { ID::inputGain, 1 },
+                                                     "Input",
+                                                     NormalisableRange<float> (-40.0f, 40.0f),
+                                                     0.0f,
+                                                     getDbAttributes())),
+                  outputGain (addToLayout<Parameter> (layout,
+                                                      ParameterID { ID::outputGain, 1 },
+                                                      "Output",
+                                                      NormalisableRange<float> (-40.0f, 40.0f),
+                                                      0.0f,
+                                                      getDbAttributes())),
+                  pan (addToLayout<Parameter> (layout,
+                                               ParameterID { ID::pan, 1 },
+                                               "Panning",
+                                               NormalisableRange<float> (-100.0f, 100.0f),
+                                               0.0f,
+                                               Attributes().withStringFromValueFunction (valueToTextPanFunction)
+                                                           .withValueFromStringFunction (textToValuePanFunction))) {}
+
+            Parameter& inputGain;
+            Parameter& outputGain;
+            Parameter& pan;
+        };
+
         
         struct DelayEffectGroup
         {
@@ -254,30 +286,25 @@ public:
                                                50.0f,
                                                getPercentageAttributes())),
                   feedback (addToLayout<Parameter> (layout,
-                                                    ParameterID { ID::outputGain, 1 },
+                                                    ParameterID { ID::delayEffectFeedback, 1 },
                                                     "Feedback",
                                                     NormalisableRange<float> (-20.0f, 0.0f),
                                                     -5.0f,
-                                                    getDbAttributes())),
-                    output (addToLayout<Parameter> (layout,
-                                              ParameterID { ID::delayEffectFeedback, 1 },
-                                              "Output",
-                                              NormalisableRange<float> (-40.0f, 40.0f),
-                                              0.0f,
-                                              getDbAttributes())){}
+                                                    getDbAttributes())) {}
 
             Parameter& value;
             Parameter& lowpass;
             Parameter& hipass;
             Parameter& mix;
             Parameter& feedback;
-            Parameter& output;
         };
 
         
         explicit ParameterReferences (AudioProcessorValueTreeState::ParameterLayout& layout)
-            : delayEffect   (addToLayout<AudioProcessorParameterGroup> (layout, "delayeffect",   "Delay Effect",  "|")) {}
+            : main          (addToLayout<AudioProcessorParameterGroup> (layout, "main",          "Main",          "|")),
+              delayEffect   (addToLayout<AudioProcessorParameterGroup> (layout, "delayeffect",   "Delay Effect",  "|")) {}
 
+        MainGroup main;
         DelayEffectGroup delayEffect;
     };
 
@@ -302,6 +329,11 @@ private:
     {
         apvts.state.addListener (this);
 
+        forEach ([] (dsp::Gain<float>& gain) { gain.setRampDurationSeconds (0.05); },
+                 dsp::get<inputGainIndex>  (chain),
+                 dsp::get<outputGainIndex> (chain));
+
+        dsp::get<pannerIndex> (chain).setRule (dsp::PannerRule::linear);
     }
 
     //==============================================================================
@@ -314,6 +346,11 @@ private:
     void update()
     {
         
+
+        dsp::get<inputGainIndex>  (chain).setGainDecibels (parameters.main.inputGain.get());
+        dsp::get<outputGainIndex> (chain).setGainDecibels (parameters.main.outputGain.get());
+        dsp::get<pannerIndex> (chain).setPan (parameters.main.pan.get() / 100.0f);
+
         {
             DelayEffectProcessor& delay = dsp::get<delayEffectIndex> (chain);
 
@@ -328,13 +365,45 @@ private:
             delay.lowpass.setCutoffFrequency (parameters.delayEffect.lowpass.get());
             delay.hipass.setCutoffFrequency (parameters.delayEffect.hipass.get());
             delay.mixer.setWetMixProportion (parameters.delayEffect.mix.get() / 100.0f);
-            delay.outputGain.setGainDecibels(parameters.delayEffect.output.get());
         }
 
         requiresUpdate.store (false);
     }
 
     //==============================================================================
+    static String getPanningTextForValue (float value)
+    {
+        if (approximatelyEqual (value, 0.5f))
+            return "center";
+
+        if (value < 0.5f)
+            return String (roundToInt ((0.5f - value) * 200.0f)) + "%L";
+
+        return String (roundToInt ((value - 0.5f) * 200.0f)) + "%R";
+    }
+
+    static float getPanningValueForText (String strText)
+    {
+        if (strText.compareIgnoreCase ("center") == 0 || strText.compareIgnoreCase ("c") == 0)
+            return 0.5f;
+
+        strText = strText.trim();
+
+        if (strText.indexOfIgnoreCase ("%L") != -1)
+        {
+            auto percentage = (float) strText.substring (0, strText.indexOf ("%")).getDoubleValue();
+            return (100.0f - percentage) / 100.0f * 0.5f;
+        }
+
+        if (strText.indexOfIgnoreCase ("%R") != -1)
+        {
+            auto percentage = (float) strText.substring (0, strText.indexOf ("%")).getDoubleValue();
+            return percentage / 100.0f * 0.5f + 0.5f;
+        }
+
+        return 0.5f;
+    }
+
     
     struct DelayEffectProcessor
     {
@@ -371,20 +440,18 @@ private:
             const auto numSamples  = inputBlock.getNumSamples();
 
             mixer.pushDrySamples (inputBlock);
+            
+            auto* samplesInL  = inputBlock .getChannelPointer (0);
+            auto* samplesInR  = inputBlock .getChannelPointer (1);
+            auto* samplesOutL = outputBlock.getChannelPointer (0);
+            auto* samplesOutR = outputBlock.getChannelPointer (1);
+            
             for (size_t i = 0; i < numSamples; ++i)
             {
-                
-                
-                auto* samplesInL  = inputBlock .getChannelPointer (0);
-                auto* samplesInR  = inputBlock .getChannelPointer (1);
-                auto* samplesOutL = outputBlock.getChannelPointer (0);
-                auto* samplesOutR = outputBlock.getChannelPointer (1);
-                
                 auto inputL = samplesInR[i] + lastDelayEffectOutput[1];
                 auto inputR = samplesInL[i] + lastDelayEffectOutput[0];
 
                 auto delay = smoothFilter.processSample (int (0), delayEffectValue);
-
                 
                 const auto outputL = linear.popSample (int (0));
                 const auto outputR = linear.popSample (int (1));
@@ -393,20 +460,16 @@ private:
                 linear.pushSample (1, inputR);
                 linear.setDelay ((float) delay);
 
-                auto processedL = lowpass.processSample (int (0), outputL);
-                processedL = hipass.processSample(int (0), processedL);
-                
-                auto processedR = lowpass.processSample (int (1), outputR);
-                processedR = hipass.processSample(int (1), processedR);
+                samplesOutL[i] = outputL;
+                samplesOutR[i] = outputR;
 
-                samplesOutL[i] = processedL;
-                samplesOutR[i] = processedR;
-
-                lastDelayEffectOutput[0] = processedL * delayFeedbackVolume[0].getNextValue();
-                lastDelayEffectOutput[1] = processedR * delayFeedbackVolume[1].getNextValue();
+                lastDelayEffectOutput[0] = outputL * delayFeedbackVolume[0].getNextValue();
+                lastDelayEffectOutput[1] = outputR * delayFeedbackVolume[1].getNextValue();
             
 
             }
+            lowpass.process(context);
+            hipass.process(context);
 
             mixer.mixWetSamples (outputBlock);
         }
@@ -425,7 +488,6 @@ private:
         dsp::FirstOrderTPTFilter<float> hipass;
         dsp::DryWetMixer<float> mixer;
         std::array<float, 2> lastDelayEffectOutput;
-        dsp::Gain<float> outputGain;
         
         int totalSamples = 0;
     };
@@ -433,14 +495,20 @@ private:
     ParameterReferences parameters;
     AudioProcessorValueTreeState apvts;
 
-    using Chain = dsp::ProcessorChain<DelayEffectProcessor>;
+    using Chain = dsp::ProcessorChain<dsp::Gain<float>,
+                                      DelayEffectProcessor,
+                                      dsp::Gain<float>,
+                                      dsp::Panner<float>>;
     Chain chain;
     
 
     // We use this enum to index into the chain above
     enum ProcessorIndices
     {
-        delayEffectIndex
+        inputGainIndex,
+        delayEffectIndex,
+        outputGainIndex,
+        pannerIndex
     };
 
     //==============================================================================
@@ -461,6 +529,7 @@ public:
     {
     
         addAllAndMakeVisible (*this,
+                              basicControls,
                               delayEffectControls);
     
 
@@ -488,6 +557,8 @@ public:
 
         rect.reduce (80, 0);
         rectEffects.reduce (20, 0);
+
+        basicControls.setBounds (rect);
 
         forEach ([&] (Component& comp) { comp.setBounds (rectEffects); },
                  delayEffectControls);
@@ -568,6 +639,25 @@ private:
         grid.performLayout (bounds);
     }
 
+    struct BasicControls final : public Component
+    {
+        explicit BasicControls (AudioProcessorEditor& editor,
+                                const DspModulePluginDemo::ParameterReferences::MainGroup& state)
+            : pan       (editor, state.pan),
+              input     (editor, state.inputGain),
+              output    (editor, state.outputGain)
+        {
+            addAllAndMakeVisible (*this, pan, input, output);
+        }
+
+        void resized() override
+        {
+            performLayout (getLocalBounds(), input, output, pan);
+        }
+
+        AttachedSlider pan, input, output;
+    };
+
     
     struct DelayEffectControls final : public Component
     {
@@ -577,18 +667,17 @@ private:
               lowpass  (editor, state.lowpass),
               hipass   (editor, state.hipass),
               feedback (editor, state.feedback),
-              mix      (editor, state.mix),
-              output   (editor, state.output)
+              mix      (editor, state.mix)
         {
-            addAllAndMakeVisible (*this, value, lowpass, hipass, feedback, mix, output);
+            addAllAndMakeVisible (*this, value, lowpass, hipass, feedback, mix);
         }
 
         void resized() override
         {
-            performLayout (getLocalBounds(), value, lowpass, hipass, feedback, mix, output);
+            performLayout (getLocalBounds(), value, lowpass, hipass, feedback, mix);
         }
 
-        AttachedSlider value, lowpass, hipass, feedback, mix, output;
+        AttachedSlider value, lowpass, hipass, feedback, mix;
     };
 
     
@@ -601,6 +690,7 @@ private:
     //==============================================================================
     DspModulePluginDemo& proc;
 
+    BasicControls       basicControls       { *this, proc.getParameterValues().main };
     DelayEffectControls delayEffectControls { *this, proc.getParameterValues().delayEffect };
 
     //==============================================================================
