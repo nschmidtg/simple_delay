@@ -348,6 +348,102 @@ private:
 
     //==============================================================================
     
+    
+    struct ConvolutionProcessor
+    {
+        ConvolutionProcessor()
+        {
+            loadImpulseResponse (cabinet, "evoice.wav");
+            loadImpulseResponse (reverb,  "reverb.wav");
+            mixer.setMixingRule (dsp::DryWetMixingRule::balanced);
+        }
+
+        void prepare (const dsp::ProcessSpec& spec)
+        {
+            prepareAll (spec, cabinet, reverb, mixer);
+        }
+
+        void reset()
+        {
+            resetAll (cabinet, reverb, mixer);
+        }
+
+        template <typename Context>
+        void process (Context& context)
+        {
+            auto contextConv = context;
+            contextConv.isBypassed = (! cabEnabled) || context.isBypassed;
+            cabinet.process (contextConv);
+
+            if (cabEnabled)
+                context.getOutputBlock().multiplyBy (4.0f);
+
+            if (reverbEnabled)
+                mixer.pushDrySamples (context.getInputBlock());
+
+            contextConv.isBypassed = (! reverbEnabled) || context.isBypassed;
+            reverb.process (contextConv);
+
+            if (reverbEnabled)
+            {
+                const auto& outputBlock = context.getOutputBlock();
+                outputBlock.multiplyBy (4.0f);
+                mixer.mixWetSamples (outputBlock);
+            }
+        }
+
+        int getLatency() const
+        {
+            auto latency = 0;
+
+            if (cabEnabled)
+                latency += cabinet.getLatency();
+
+            if (reverbEnabled)
+                latency += reverb.getLatency();
+
+            return latency;
+        }
+
+        dsp::ConvolutionMessageQueue queue;
+        dsp::Convolution cabinet { dsp::Convolution::NonUniform { 512 }, queue };
+        dsp::Convolution reverb { dsp::Convolution::NonUniform { 512 }, queue };
+        dsp::DryWetMixer<float> mixer;
+        bool cabEnabled = true, reverbEnabled = false;
+
+    private:
+        static void loadImpulseResponse (dsp::Convolution& convolution, const char* filename)
+        {
+            auto stream = createAssetInputStream (filename);
+
+            if (stream == nullptr)
+            {
+                jassertfalse;
+                return;
+            }
+
+            AudioFormatManager manager;
+            manager.registerBasicFormats();
+            std::unique_ptr<AudioFormatReader> reader { manager.createReaderFor (std::move (stream)) };
+
+            if (reader == nullptr)
+            {
+                jassertfalse;
+                return;
+            }
+
+            AudioBuffer<float> buffer (static_cast<int> (reader->numChannels),
+                                       static_cast<int> (reader->lengthInSamples));
+            reader->read (buffer.getArrayOfWritePointers(), buffer.getNumChannels(), 0, buffer.getNumSamples());
+
+            convolution.loadImpulseResponse (std::move (buffer),
+                                             reader->sampleRate,
+                                             dsp::Convolution::Stereo::yes,
+                                             dsp::Convolution::Trim::yes,
+                                             dsp::Convolution::Normalise::yes);
+        }
+    };
+    
     struct DelayEffectProcessor
     {
         DelayEffectProcessor()
@@ -361,7 +457,7 @@ private:
         void prepare (const dsp::ProcessSpec& spec)
         {
             prepareAll (spec, linear, smoothFilter, lowpass, hipass, mixer);
-
+            
             for (auto& volume : delayFeedbackVolume)
                 volume.reset (spec.sampleRate, 0.05);
         }
@@ -413,7 +509,7 @@ private:
             }
             lowpass.process(context);
             hipass.process(context);
-
+            
             mixer.mixWetSamples (outputBlock);
         }
 
@@ -431,14 +527,67 @@ private:
         dsp::FirstOrderTPTFilter<float> hipass;
         dsp::DryWetMixer<float> mixer;
         std::array<float, 2> lastDelayEffectOutput;
-        
-        int totalSamples = 0;
+        dsp::IIR::Filter<float> highShelf;
     };
+    
+    struct HighShelfProcessor
+    {
+
+        HighShelfProcessor()
+        {
+
+        }
+        
+        void reset()
+        {
+            resetAll (highShelfLeft, highShelfRight);
+        }
+        void prepare (const dsp::ProcessSpec& spec)
+        {
+            prepareAll (spec, highShelfLeft, highShelfRight);
+            float centerFreq = 8000.0f;
+            float qlevel = 3.0f;
+            float gain = Decibels::decibelsToGain(8.0f, -100.0f);
+            highShelfLeft.coefficients = juce::dsp::IIR::Coefficients<float>::makeHighShelf(spec.sampleRate, centerFreq, qlevel, gain);
+            highShelfRight.coefficients = juce::dsp::IIR::Coefficients<float>::makeHighShelf(spec.sampleRate, centerFreq, qlevel, gain);
+        }
+
+        template <typename Context>
+        void process (Context& context)
+        {
+            if (context.isBypassed)
+                return;
+
+            const auto& inputBlock  = context.getInputBlock();
+            const auto& outputBlock = context.getOutputBlock();
+            
+            
+            auto leftBlock = outputBlock.getSingleChannelBlock(0);
+            auto rightBlock = outputBlock.getSingleChannelBlock(1);
+            
+            juce::dsp::ProcessContextReplacing<float> leftContext(leftBlock);
+            juce::dsp::ProcessContextReplacing<float> rightContext(rightBlock);
+            
+            
+            highShelfLeft.process(leftContext);
+            highShelfRight.process(rightContext);
+          
+
+
+        }
+        dsp::IIR::Filter<float> highShelfLeft;
+        dsp::IIR::Filter<float> highShelfRight;
+    };
+    
+
+
 
     ParameterReferences parameters;
     AudioProcessorValueTreeState apvts;
 
-    using Chain = dsp::ProcessorChain<DelayEffectProcessor,
+    using Chain = dsp::ProcessorChain<ConvolutionProcessor,
+                                      DelayEffectProcessor,
+                                      HighShelfProcessor,
                                       dsp::Gain<float>>;
     Chain chain;
     
@@ -446,7 +595,9 @@ private:
     // We use this enum to index into the chain above
     enum ProcessorIndices
     {
+        convolutionIndex,
         delayEffectIndex,
+        highShelfIndex,
         outputGainIndex,
     };
 
